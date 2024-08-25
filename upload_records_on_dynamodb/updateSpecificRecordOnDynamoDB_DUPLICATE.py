@@ -30,13 +30,16 @@ log_file_path = os.path.join(log_dir, log_file_name)
 # Redirect print statements to the log file
 sys.stdout = open(log_file_path, 'w')
 sys.stderr = sys.stdout
+#annotation_key = 'deepesh-081557189.pdf-202403161543'
+#org_ID = 'deepesh'  
+          
 AWS_ACCESS_KEY_ID = ''
 AWS_SECRET_ACCESS_KEY = ''
 AWS_REGION = ''
 meta_dict = {}
 s3 = boto3.client('s3', region_name=AWS_REGION, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
-S3_BUCKET_NAME = ''
-pdf_file_path = ""
+
+pdf_file_path = r""
 #/home/ubuntu/creatingChildRecords/dynamo_db_pdfs
 #
 current_timestamp = time.time()
@@ -66,9 +69,7 @@ def dynamo_db(table_name):
         
         # Define the filter expression
         filter_expression = (
-            Attr('annotationKey').eq('00D3x000001zcsCEAQ-E-806968-00-20297.pdf-202407041739')
-            #(~Attr('fileStatus').eq('Draft')) &
-            #(~Attr('status').eq('Incomplete'))
+            Attr('annotationKey').eq("005Ho00000B4FIHIA3-081548885.pdf-202408071257")
         )
 
         # Perform the initial scan with the filter expression
@@ -76,7 +77,6 @@ def dynamo_db(table_name):
             FilterExpression=filter_expression
         )
         all_items.extend(response['Items'])
-        
         # Continue to scan until all items are retrieved
         while 'LastEvaluatedKey' in response:
             response = table.scan(
@@ -99,7 +99,8 @@ def dynamo_db(table_name):
                 'json_url': item.get('jsonUrl'),
                 'bucket_name':item.get('bucketName'),
                 'upload_date':item.get('uploadDate'),
-                'uploaded_time':item.get('uploadedTime')
+                'uploaded_time':item.get('uploadedTime'),
+                'document_type':item.get('documentType')
             })
         
         #print(s3url_org_doc_ids)    
@@ -295,13 +296,13 @@ def dump_parent_json_into_children(meta_dict , url):
             # Upload JSON object to S3
             response = s3.put_object(
                 Body=json.dumps(json_object),
-                Bucket='cf-ai-test2',
+                Bucket=bucket_name,
                 Key=s3_json_object_key
             )
             #print(response)
             json_url = s3.generate_presigned_url(
                     'get_object',
-                    Params={'Bucket': 'cf-ai-test2', 'Key': s3_json_object_key},
+                    Params={'Bucket': bucket_name, 'Key': s3_json_object_key},
                     ExpiresIn=5 * 365 * 24 * 60 * 60 
                 )
             temp_json_url = f"https://{bucket_name}.s3.us-east-1.amazonaws.com/{s3_json_object_key}"
@@ -327,10 +328,15 @@ def dump_parent_json_into_children(meta_dict , url):
     #     return False
     return json_urls , len(json_urls) , json_page_not_included
 
-def upload_jpeg_to_s3(url, meta_dict, bucket_name , page_not_included):
-    #parsed_url = urlparse(url)
-    #object_key = parsed_url.path.lstrip('/')
-    #object_key_without_extent = object_key[:-5]
+def upload_jpeg_to_s3(url,s3_url, meta_dict , page_not_included):
+    parsed_url = urlparse(s3_url)
+    bucket_name = parsed_url.netloc.split('.')[0]
+    object_key = parsed_url.path.lstrip('/')
+    object_key_without_extent = object_key[:-4]
+    parts = object_key.split('/')
+
+    # Remove the last part
+    new_path = '/'.join(parts[:-2])
     #print(f"json url : {url}")
     
     jpeg_files = []
@@ -343,7 +349,10 @@ def upload_jpeg_to_s3(url, meta_dict, bucket_name , page_not_included):
     org_id = meta_dict.get('org_id')
     user_id = meta_dict.get('user_id')
     parent_id = meta_dict.get('annotation_key')
+    print(parent_id)
+    print(type(parent_id))
     bucket_name = meta_dict.get('bucket_name')
+    document_type = meta_dict.get('document_type')
     pdf_name_without_extension = os.path.splitext(pdf_name)[0]
     
     image_path = os.path.join(pdf_file_path , "images")
@@ -360,7 +369,7 @@ def upload_jpeg_to_s3(url, meta_dict, bucket_name , page_not_included):
         return match.group() if match else None
     for i , jpeg_file in enumerate(sorted_files):
         page_number = extract_page(jpeg_file)
-        s3_object_key = f"testing/{str(org_id)}/{str(user_id)}/{pdf_name}/jpeg/{pdf_name_without_extension}-{page_number}.jpeg"
+        s3_object_key = f"{new_path}/jpeg/{pdf_name_without_extension}-{page_number}.jpeg"
         
         img_path = os.path.join(pdf_file_path , "images" , jpeg_file)
         #print(f"img path : {img_path}")
@@ -395,7 +404,8 @@ def upload_jpeg_to_s3(url, meta_dict, bucket_name , page_not_included):
             'annotation_key':f"{annotation_key}-{page_part}",
             'bucket_name':bucket_name,
             'uploaded_time':uploaded_time,
-            'upload_date':upload_date
+            'upload_date':upload_date,
+            'document_type':document_type
         })
     return jpeg_dict
  
@@ -411,8 +421,9 @@ def vendor_name(meta_dict):
             for r in response:
                 #print(r)
                 vendor = r.get('header').get('vendor')
-                #print(vendor)
-                return vendor
+                invoice_number = r.get('header').get('invoiceNumber')
+                print(invoice_number)
+                return vendor , invoice_number
     except:
         print("json is wrong formatted")
         #pass
@@ -420,7 +431,7 @@ def vendor_name(meta_dict):
 def update_children_to_dynamo_db(jpeg_dict):
     dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
     table = dynamodb.Table("AnnotationsInfo")
-    vendor = vendor_name(meta_dict)
+    vendor , invoice_number = vendor_name(meta_dict)
     now = dt.utcnow()
     curr_timestamp = f"{now.year}{now.month:02}{now.day:02}{now.hour:02}{now.minute:02}"
     #curr_date = f"{dt.utcnow().month}/{dt.utcnow().day}/{dt.utcnow().year}"
@@ -464,7 +475,8 @@ def update_children_to_dynamo_db(jpeg_dict):
                     'uploadDate':item.get('upload_date'),
                     'timestamp':curr_timestamp,
                     'uploadedTime':item.get('uploaded_time'),
-                    'documentType':'invoice'
+                    'documentType':item.get('document_type'),
+                    'documentNumber':invoice_number
                     }
                 )
             #print(f"Items : {item}")
@@ -520,13 +532,13 @@ if __name__ == "__main__":
         try:
             json_url = meta_dict.get('json_url')
             #print(f"dump_parent_json : {dump_parent_json_into_children(json_url)}")
-            url, json_url_length , page_not_included = dump_parent_json_into_children(meta_dict , json_url)
+            url_list, json_url_length , page_not_included = dump_parent_json_into_children(meta_dict , json_url)
             page_counted = pdf_page_count(pdf_path)
             #print(f"page_count {page_counted} and its type {type(page_counted)})")
             #print(f"json_url_length {json_url_length} and its type {type(json_url_length)}")
-            
+            s3_url = meta_dict.get('s3_url')
             #if page_counted == json_url_length:
-            jpeg_dict = upload_jpeg_to_s3(url , meta_dict, S3_BUCKET_NAME , page_not_included)
+            jpeg_dict = upload_jpeg_to_s3(url_list ,s3_url ,  meta_dict, page_not_included)
                 #print(f"jpeg_dicts {jpeg_dict}")
             '''
             else:
